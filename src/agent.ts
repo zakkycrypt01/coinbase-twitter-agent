@@ -3,6 +3,7 @@ import { CdpToolkit } from "@coinbase/cdp-langchain";
 import { HumanMessage } from "@langchain/core/messages";
 // import { ChatAnthropic } from "@langchain/anthropic";
 import { ChatOpenAI } from "@langchain/openai";
+import { ChatGoogleGenerativeAI } from "@langchain/google-genai";
 import { DynamicTool } from "@langchain/core/tools";
 import { MemorySaver } from "@langchain/langgraph";
 import { createReactAgent } from "@langchain/langgraph/prebuilt";
@@ -55,10 +56,21 @@ export class BaseAIAgent {
     this.agentkit = await CdpAgentkit.configureWithWallet(config);
 
     // Initialize LLM
-    const llm = new ChatOpenAI({
-      openAIApiKey: process.env.OPENAI_API_KEY!,
-      modelName: "gpt-4o-mini",
-    });
+    const llmProvider = process.env.LLM_PROVIDER || "openai";
+    let llm;
+    
+    if (llmProvider === "gemini") {
+      llm = new ChatGoogleGenerativeAI({
+        apiKey: process.env.GOOGLE_API_KEY!,
+        model: "gemini-1.5-flash",
+        temperature: 0.7,
+      });
+    } else {
+      llm = new ChatOpenAI({
+        openAIApiKey: process.env.OPENAI_API_KEY!,
+        modelName: "gpt-4o-mini",
+      });
+    }
 
     // Initialize CDP tools
     const cdpToolkit = new CdpToolkit(this.agentkit);
@@ -103,7 +115,7 @@ export class BaseAIAgent {
         "Your personality is creative, helpful, and enthusiastic about crypto and web3. " +
         "You can deploy tokens, mint NFTs, and perform other blockchain operations. " +
         "Don't use markdown or HTML in your responses. " +
-        "When users ask for something you can't do, suggest alternatives or guide them to Coinbase Developer Platform or Quicknode Marketplace Team. " +
+        "When users ask for something you can't do, suggest alternatives or guide them to Coinbase Developer Platform. " +
         "Keep responses short, concise, and engaging, using emojis where appropriate. " +
         "When replying to a tweet, formulate your response and then use the send_tweet tool with format 'REPLY:tweetId:yourResponse'.",
     });
