@@ -56,7 +56,7 @@ export class BaseAIAgent {
     }
 
     this.genAI = new GoogleGenerativeAI(process.env.GOOGLE_API_KEY);
-    this.model = this.genAI.getGenerativeModel({ model: "gemini-pro" });
+    this.model = this.genAI.getGenerativeModel({ model: "gemini-1.5-pro" });
 
     // Get LangChain tools from AgentKit
     const agentKitTools = await getLangChainTools(this.agentKit);
