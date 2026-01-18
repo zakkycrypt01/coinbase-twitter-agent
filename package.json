@@ -21,6 +21,7 @@
     "@coinbase/agentkit-langchain": "^0.3.0",
     "@coinbase/cdp-agentkit-core": "^0.0.11",
     "@coinbase/cdp-langchain": "^0.0.12",
+    "@google/generative-ai": "^0.24.1",
     "@langchain/anthropic": "^0.3.11",
     "@langchain/core": "^0.3.30",
     "@langchain/google-genai": "^2.1.10",
