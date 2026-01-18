@@ -1,7 +1,11 @@
-import { CdpAgentkit } from "@coinbase/cdp-agentkit-core";
-import { CdpToolkit } from "@coinbase/cdp-langchain";
+import {
+  AgentKit,
+  CdpEvmWalletProvider,
+  CdpApiActionProvider,
+  CdpEvmWalletActionProvider,
+} from "@coinbase/agentkit";
+import { getLangChainTools } from "@coinbase/agentkit-langchain";
 import { HumanMessage } from "@langchain/core/messages";
-// import { ChatAnthropic } from "@langchain/anthropic";
 import { ChatOpenAI } from "@langchain/openai";
 import { ChatGoogleGenerativeAI } from "@langchain/google-genai";
 import { DynamicTool } from "@langchain/core/tools";
@@ -13,19 +17,17 @@ import * as fs from "fs";
 
 dotenv.config();
 
-// Configure a file to persist the agent's CDP MPC Wallet Data
 const WALLET_DATA_FILE = "wallet_data.txt";
 
 export class BaseAIAgent {
-  private agentkit: CdpAgentkit | undefined;
-  private agent: any; // ReAct agent
+  private agentKit: AgentKit | undefined;
+  private agent: any;
   private twitterClient: TwitterApi;
   private agentConfig: any;
   private processedTweets: Set<string> = new Set();
   private lastProcessedMentionId: string | null = null;
 
   constructor() {
-    // Initialize Twitter client
     this.twitterClient = new TwitterApi({
       appKey: process.env.TWITTER_API_KEY!,
       appSecret: process.env.TWITTER_API_SECRET!,
@@ -37,28 +39,34 @@ export class BaseAIAgent {
   async initialize() {
     let walletDataStr: string | null = null;
 
-    // Read existing wallet data if available
     if (fs.existsSync(WALLET_DATA_FILE)) {
       try {
         walletDataStr = fs.readFileSync(WALLET_DATA_FILE, "utf8");
       } catch (error) {
         console.error("Error reading wallet data:", error);
-        // Continue without wallet data
       }
     }
 
-    // Configure CDP Agentkit with Base Sepolia
-    const config = {
+    // Configure CDP Wallet Provider
+    const walletProvider = await CdpEvmWalletProvider.configureWithWallet({
+      apiKeyId: process.env.CDP_API_KEY_NAME!,
+      apiKeySecret: process.env.CDP_API_KEY_PRIVATE_KEY?.replace(/\\n/g, "\n"),
       networkId: "base-sepolia",
-      cdpWalletData: walletDataStr || undefined,
-    };
+    });
 
-    this.agentkit = await CdpAgentkit.configureWithWallet(config);
+    // Initialize AgentKit with action providers
+    this.agentKit = await AgentKit.from({
+      walletProvider,
+      actionProviders: [
+        new CdpApiActionProvider(),
+        new CdpEvmWalletActionProvider(),
+      ],
+    });
 
     // Initialize LLM
     const llmProvider = process.env.LLM_PROVIDER || "openai";
     let llm;
-    
+
     if (llmProvider === "gemini") {
       llm = new ChatGoogleGenerativeAI({
         apiKey: process.env.GOOGLE_API_KEY!,
@@ -72,11 +80,10 @@ export class BaseAIAgent {
       });
     }
 
-    // Initialize CDP tools
-    const cdpToolkit = new CdpToolkit(this.agentkit);
-    const tools = cdpToolkit.getTools();
+    // Get LangChain tools from AgentKit
+    const tools = await getLangChainTools(this.agentKit);
 
-    // Add custom Twitter tool that handles both replies and new tweets
+    // Add custom Twitter tool
     const twitterTool = new DynamicTool({
       name: "send_tweet",
       description:
@@ -98,16 +105,14 @@ export class BaseAIAgent {
       },
     });
 
-    tools.push(twitterTool);
+    const allTools = [...tools, twitterTool];
 
-    // Store conversation history
     const memory = new MemorySaver();
     this.agentConfig = { configurable: { thread_id: "Base AI Agent" } };
 
-    // Create ReAct Agent
     this.agent = createReactAgent({
       llm,
-      tools,
+      tools: allTools,
       checkpointSaver: memory,
       messageModifier:
         "You are a fun and engaging AI agent on Base blockchain. You can perform various onchain actions and interact with users via Twitter. " +
@@ -120,12 +125,13 @@ export class BaseAIAgent {
         "When replying to a tweet, formulate your response and then use the send_tweet tool with format 'REPLY:tweetId:yourResponse'.",
     });
 
-    // Save wallet data
-    const exportedWallet = await this.agentkit.exportWallet();
-    fs.writeFileSync(WALLET_DATA_FILE, exportedWallet);
+    // Export and save wallet data
+    const walletData = await walletProvider.exportWallet();
+    fs.writeFileSync(WALLET_DATA_FILE, JSON.stringify(walletData));
 
     console.log("Agent initialized on Base Sepolia");
   }
+
 
   async handleTweet(
     tweetText: string,
