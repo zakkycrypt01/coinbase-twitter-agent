@@ -20,6 +20,9 @@ importers:
       '@coinbase/cdp-langchain':
         specifier: ^0.0.12
         version: 0.0.12(@coinbase/coinbase-sdk@0.20.0(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@5.0.10)(zod@3.25.76))(bufferutil@4.1.0)(openai@4.104.0(ws@8.19.0(bufferutil@4.1.0)(utf-8-validate@5.0.10))(zod@3.25.76))(typescript@5.9.3)(utf-8-validate@5.0.10)
+      '@google/generative-ai':
+        specifier: ^0.24.1
+        version: 0.24.1
       '@langchain/anthropic':
         specifier: ^0.3.11
         version: 0.3.34(@langchain/core@0.3.80(openai@4.104.0(ws@8.19.0(bufferutil@4.1.0)(utf-8-validate@5.0.10))(zod@3.25.76)))(zod@3.25.76)

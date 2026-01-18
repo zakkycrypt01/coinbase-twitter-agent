@@ -5,12 +5,8 @@ import {
   CdpEvmWalletActionProvider,
 } from "@coinbase/agentkit";
 import { getLangChainTools } from "@coinbase/agentkit-langchain";
-import { HumanMessage } from "@langchain/core/messages";
-import { ChatOpenAI } from "@langchain/openai";
-import { ChatGoogleGenerativeAI } from "@langchain/google-genai";
+import { GoogleGenerativeAI } from "@google/generative-ai";
 import { DynamicTool } from "@langchain/core/tools";
-import { MemorySaver } from "@langchain/langgraph";
-import { createReactAgent } from "@langchain/langgraph/prebuilt";
 import { TwitterApi } from "twitter-api-v2";
 import * as dotenv from "dotenv";
 import * as fs from "fs";
@@ -21,9 +17,10 @@ const WALLET_DATA_FILE = "wallet_data.txt";
 
 export class BaseAIAgent {
   private agentKit: AgentKit | undefined;
-  private agent: any;
+  private genAI: GoogleGenerativeAI | undefined;
+  private model: any;
+  private tools: Map<string, DynamicTool> = new Map();
   private twitterClient: TwitterApi;
-  private agentConfig: any;
   private processedTweets: Set<string> = new Set();
   private lastProcessedMentionId: string | null = null;
 
@@ -37,16 +34,6 @@ export class BaseAIAgent {
   }
 
   async initialize() {
-    let walletDataStr: string | null = null;
-
-    if (fs.existsSync(WALLET_DATA_FILE)) {
-      try {
-        walletDataStr = fs.readFileSync(WALLET_DATA_FILE, "utf8");
-      } catch (error) {
-        console.error("Error reading wallet data:", error);
-      }
-    }
-
     // Configure CDP Wallet Provider
     const walletProvider = await CdpEvmWalletProvider.configureWithWallet({
       apiKeyId: process.env.CDP_API_KEY_NAME!,
@@ -63,25 +50,19 @@ export class BaseAIAgent {
       ],
     });
 
-    // Initialize LLM
-    const llmProvider = process.env.LLM_PROVIDER || "openai";
-    let llm;
-
-    if (llmProvider === "gemini") {
-      llm = new ChatGoogleGenerativeAI({
-        apiKey: process.env.GOOGLE_API_KEY!,
-        model: "gemini-1.5-flash",
-        temperature: 0.7,
-      });
-    } else {
-      llm = new ChatOpenAI({
-        openAIApiKey: process.env.OPENAI_API_KEY!,
-        modelName: "gpt-4o-mini",
-      });
+    // Initialize Gemini API directly
+    if (!process.env.GOOGLE_API_KEY) {
+      throw new Error("GOOGLE_API_KEY must be set in .env file");
     }
 
+    this.genAI = new GoogleGenerativeAI(process.env.GOOGLE_API_KEY);
+    this.model = this.genAI.getGenerativeModel({ model: "gemini-pro" });
+
     // Get LangChain tools from AgentKit
-    const tools = await getLangChainTools(this.agentKit);
+    const agentKitTools = await getLangChainTools(this.agentKit);
+    for (const tool of agentKitTools) {
+      this.tools.set(tool.name, tool as DynamicTool);
+    }
 
     // Add custom Twitter tool
     const twitterTool = new DynamicTool({
@@ -105,31 +86,20 @@ export class BaseAIAgent {
       },
     });
 
-    const allTools = [...tools, twitterTool];
-
-    const memory = new MemorySaver();
-    this.agentConfig = { configurable: { thread_id: "Base AI Agent" } };
-
-    this.agent = createReactAgent({
-      llm,
-      tools: allTools,
-      checkpointSaver: memory,
-      messageModifier:
-        "You are a fun and engaging AI agent on Base blockchain. You can perform various onchain actions and interact with users via Twitter. " +
-        "You have access to Base Sepolia testnet. If you need funds, use the faucet. " +
-        "Your personality is creative, helpful, and enthusiastic about crypto and web3. " +
-        "You can deploy tokens, mint NFTs, and perform other blockchain operations. " +
-        "Don't use markdown or HTML in your responses. " +
-        "When users ask for something you can't do, suggest alternatives or guide them to Coinbase Developer Platform. " +
-        "Keep responses short, concise, and engaging, using emojis where appropriate. " +
-        "When replying to a tweet, formulate your response and then use the send_tweet tool with format 'REPLY:tweetId:yourResponse'.",
-    });
+    this.tools.set("send_tweet", twitterTool);
 
     // Export and save wallet data
     const walletData = await walletProvider.exportWallet();
     fs.writeFileSync(WALLET_DATA_FILE, JSON.stringify(walletData));
 
     console.log("Agent initialized on Base Sepolia");
+  }
+
+  private async callLLM(userMessage: string) {
+    if (!this.model) throw new Error("LLM not initialized");
+    const result = await this.model.generateContent(userMessage);
+    const text = result.response.text();
+    return text;
   }
 
 
@@ -149,24 +119,22 @@ export class BaseAIAgent {
       );
       this.processedTweets.add(tweetId);
 
-      const stream = await this.agent.stream(
-        {
-          messages: [
-            new HumanMessage(
-              `User @${authorUsername} tweeted: ${tweetText}\n` +
-                `Process their request and respond appropriately. ` +
-                `When you have your response ready, use the send_tweet tool with format 'REPLY:${tweetId}:@${authorUsername} yourResponse'`
-            ),
-          ],
-        },
-        this.agentConfig
-      );
+      const prompt = 
+        `User @${authorUsername} tweeted: "${tweetText}"\n\n` +
+        `Please provide a helpful response that could be sent as a reply. ` +
+        `Keep it short, engaging, and use emojis where appropriate. ` +
+        `Do not use markdown or HTML.`;
 
-      for await (const chunk of stream) {
-        if ("agent" in chunk) {
-          console.log("Agent response:", chunk.agent.messages[0].content);
-        } else if ("tools" in chunk) {
-          console.log("Tool execution:", chunk.tools.messages[0].content);
+      const response = await this.callLLM(prompt);
+      console.log("Agent response:", response);
+
+      // Send the response as a reply
+      if (response && response.trim()) {
+        try {
+          const result = await this.twitterClient.v2.reply(response, tweetId);
+          console.log(`Reply sent: ${result.data.id}`);
+        } catch (error) {
+          console.error("Error sending reply:", error);
         }
       }
     } catch (error) {
@@ -253,29 +221,26 @@ export class BaseAIAgent {
       try {
         const thought = await this.generateAutonomousAction();
 
-        const stream = await this.agent.stream(
-          {
-            messages: [
-              new HumanMessage(
-                `Create an engaging tweet based on this prompt: ${thought}\n\n` +
-                  `Guidelines:\n` +
-                  `- Focus on providing value through information and engagement\n` +
-                  `- Only perform on-chain actions if explicitly prompted\n` +
-                  `- Keep tweets concise and friendly\n` +
-                  `- Use emojis appropriately\n` +
-                  `- Include hashtags like #Base #Web3 when relevant\n` +
-                  `When ready, use the send_tweet tool to share your message.`
-              ),
-            ],
-          },
-          this.agentConfig
-        );
+        const prompt = 
+          `Create an engaging tweet based on this idea: ${thought}\n\n` +
+          `Guidelines:\n` +
+          `- Focus on providing value through information and engagement\n` +
+          `- Keep tweets concise and friendly (under 280 characters)\n` +
+          `- Use emojis appropriately\n` +
+          `- Include hashtags like #Base #Web3 when relevant\n` +
+          `- Don't use markdown or HTML\n` +
+          `Just provide the tweet text directly.`;
 
-        for await (const chunk of stream) {
-          if ("agent" in chunk) {
-            console.log("Autonomous action:", chunk.agent.messages[0].content);
-          } else if ("tools" in chunk) {
-            console.log("Tool execution:", chunk.tools.messages[0].content);
+        const response = await this.callLLM(prompt);
+        console.log("Generated tweet:", response);
+
+        // Send the tweet
+        if (response && response.trim()) {
+          try {
+            const result = await this.twitterClient.v2.tweet(response);
+            console.log(`Tweet sent: ${result.data.id}`);
+          } catch (error) {
+            console.error("Error sending tweet:", error);
           }
         }
 
